@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AirRisk Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+    /* Styling เดิม + เพิ่ม Graph Container */
+    body { font-family: 'Arial', sans-serif; background: #f4f7f6; padding: 20px; color: #333; }
+    h1 { text-align: center; color: #2c3e50; margin-bottom: 30px; }
+    
+    .container { max-width: 1000px; margin: 0 auto; }
+    
+    /* Card Styling */
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 25px; }
+    
+    .summary-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; text-align: center; }
+    .summary-item strong { display: block; font-size: 1.5em; margin-top: 5px; }
+    
+    /* AirRisk Colors */
+    .risk-low { color: #27ae60; }
+    .risk-moderate { color: #f39c12; }
+    .risk-high { color: #e74c3c; }
+    .risk-critical { color: #8e44ad; }
+
+    /* Table Styling */
+    table { width: 100%; border-collapse: collapse; margin-top: 10px; }
+    th, td { padding: 12px; border-bottom: 1px solid #eee; text-align: center; font-size: 0.95em; }
+    th { background: #34495e; color: white; border-radius: 5px 5px 0 0; }
+    tr:hover { background-color: #f9f9f9; }
+
+    /* Graph Container */
+    #chartContainer { position: relative; height: 350px; width: 100%; }
+</style>
+</head>
+<body>
+
+<div class="container">
+    <h1>🌤️ AirRisk Monitoring & Prediction</h1>
+
+    <div class="card">
+        <h3 style="margin-top:0;">🔮 Forecast (พยากรณ์ล่วงหน้า)</h3>
+        <div class="summary-grid">
+            <div class="summary-item">
+                <span>Next 1 Hr</span>
+                <strong class="risk-{{ latest_pred.airrisk_1h|lower }}">{{ latest_pred.pred_1h|round(1) }} µg/m³</strong>
+                <small>{{ latest_pred.airrisk_1h }}</small>
+            </div>
+            <div class="summary-item">
+                <span>Next 3 Hr</span>
+                <strong class="risk-{{ latest_pred.airrisk_3h|lower }}">{{ latest_pred.pred_3h|round(1) }} µg/m³</strong>
+                <small>{{ latest_pred.airrisk_3h }}</small>
+            </div>
+            <div class="summary-item">
+                <span>Next 24 Hr</span>
+                <strong class="risk-{{ latest_pred.airrisk_24h|lower }}">{{ latest_pred.pred_24h|round(1) }} µg/m³</strong>
+                <small>{{ latest_pred.airrisk_24h }}</small>
+            </div>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 style="margin-top:0;">📈 Trend Analysis</h3>
+        <div id="chartContainer">
+            <canvas id="airChart"></canvas>
+        </div>
+    </div>
+
+    <div class="card">
+        <h3 style="margin-top:0;">📋 Data History</h3>
+        <div style="overflow-x:auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Time</th>
+                        <th>PM2.5</th>
+                        <th>Temp (°C)</th>
+                        <th>Wind (km/h)</th>
+                        <th>Risk Level</th>
+                    </tr>
+                </thead>
+                <tbody>
+                {% if table_data %}
+                    {% for row in table_data | reverse %}
+                    <tr>
+                        <td>{{ row.date }}</td>
+                        <td>{{ row.pm2_5 }}</td>
+                        <td>{{ row.temperature_c }}</td>
+                        <td>{{ row.wind_speed_kmph }}</td>
+                        <td><span class="risk-{{ row.airrisk|lower }}">● {{ row.airrisk }}</span></td>
+                    </tr>
+                    {% endfor %}
+                {% else %}
+                    <tr><td colspan="5">No Data</td></tr>
+                {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<script>
+    // 1. ดึงข้อมูลจาก Jinja2 มาเป็น JavaScript Array
+    const historyData = [
+        {% for row in table_data %}
+        { date: "{{ row.date }}", pm25: {{ row.pm2_5 }} },
+        {% endfor %}
+    ];
+
+    const pred1h = {{ latest_pred.pred_1h }};
+    const pred3h = {{ latest_pred.pred_3h }};
+    const pred24h = {{ latest_pred.pred_24h }};
+
+    if (historyData.length > 0) {
+        // เตรียมข้อมูลแกน X (เวลา) และ Y (ค่า PM2.5) สำหรับกราฟเส้นประวัติ
+        const labels = historyData.map(d => d.date);
+        const dataPoints = historyData.map(d => d.pm25);
+        
+        // คำนวณเวลาสำหรับจุดพยากรณ์ (Forecast Points)
+        // เอาเวลาล่าสุดมาบวกเพิ่ม
+        let lastDateStr = historyData[historyData.length - 1].date;
+        let lastDate = new Date(lastDateStr.replace(/-/g, '/')); // Fix for safari parsing
+
+        let date1h = new Date(lastDate.getTime() + 1 * 60 * 60 * 1000);
+        let date3h = new Date(lastDate.getTime() + 3 * 60 * 60 * 1000);
+        let date24h = new Date(lastDate.getTime() + 24 * 60 * 60 * 1000);
+
+        // จัด Format เวลาพยากรณ์ให้สวยงาม (HH:mm)
+        const formatTime = (d) => d.getHours().toString().padStart(2,'0') + ":" + d.getMinutes().toString().padStart(2,'0');
+
+        // รวม Labels ทั้งหมด (ประวัติ + อนาคต)
+        const allLabels = [...labels, 
+                           formatTime(date1h) + " (+1h)", 
+                           formatTime(date3h) + " (+3h)", 
+                           "Tomorrow (+24h)"];
+
+        // รวม Data Points:
+        // ช่วงประวัติ: ใส่ค่าจริง
+        // ช่วงพยากรณ์: ใส่ null (เพื่อให้กราฟเส้นประวัติหยุดแค่ปัจจุบัน)
+        const historicalSeries = [...dataPoints, null, null, null];
+
+        // สร้างเส้นพยากรณ์:
+        // ช่วงประวัติ: ใส่ null (ยกเว้นจุดสุดท้าย เพื่อให้เส้นเชื่อมกัน)
+        // ช่วงพยากรณ์: ใส่ค่าพยากรณ์
+        const lastVal = dataPoints[dataPoints.length - 1];
+        const forecastSeries = Array(dataPoints.length - 1).fill(null);
+        forecastSeries.push(lastVal, pred1h, pred3h, pred24h);
+
+        // สร้างกราฟด้วย Chart.js
+        const ctx = document.getElementById('airChart').getContext('2d');
+        new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: allLabels,
+                datasets: [
+                    {
+                        label: 'Historical PM2.5',
+                        data: historicalSeries,
+                        borderColor: '#3498db',
+                        backgroundColor: 'rgba(52, 152, 219, 0.2)',
+                        borderWidth: 2,
+                        tension: 0.3,
+                        fill: true
+                    },
+                    {
+                        label: 'Prediction',
+                        data: forecastSeries,
+                        borderColor: '#e74c3c',
+                        borderDash: [5, 5], // เส้นประ
+                        pointBackgroundColor: '#e74c3c',
+                        pointRadius: 4,
+                        borderWidth: 2,
+                        tension: 0.3
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                interaction: {
+                    mode: 'index',
+                    intersect: false,
+                },
+                plugins: {
+                    tooltip: {
+                        callbacks: {
+                            label: function(context) {
+                                return context.dataset.label + ': ' + context.parsed.y.toFixed(2) + ' µg/m³';
+                            }
+                        }
+                    }
+                },
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        title: { display: true, text: 'PM2.5 (µg/m³)' }
+                    }
+                }
+            }
+        });
+    }
+</script>
+
+</body>
+</html>
